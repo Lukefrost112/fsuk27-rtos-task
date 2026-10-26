@@ -22,7 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,7 +31,7 @@
 // Enum to store where the data came from (shared, counter)
 typedef enum { SRC_SHARED, SRC_COUNTER } source_t;
 
-// a struct holding one uart message (where it came from and the value of the
+// a struct holding one uart message (where it came from and the value of thein
 // message)
 typedef struct {
   source_t source;
@@ -310,9 +310,24 @@ void StartDefaultTask(void *argument) {
 /* USER CODE END Header_StartIncreaseVar */
 void StartIncreaseVar(void *argument) {
   /* USER CODE BEGIN StartIncreaseVar */
+
+  uint32_t timeToNextWakeup = osKernelGetTickCount();
+
   /* Infinite loop */
   for (;;) {
-    osDelay(1);
+    timeToNextWakeup += 10;
+    shared++;
+
+    if (shared > 200) {
+      shared = 100;
+    }
+
+    uart_msg_t msg;
+    msg.source = SRC_SHARED;
+    msg.value = shared;
+
+    osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
+    osDelayUntil(timeToNextWakeup);
   }
   /* USER CODE END StartIncreaseVar */
 }
