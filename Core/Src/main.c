@@ -45,8 +45,10 @@ typedef struct {
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+// TODO comment: what event this bit means and why bit 0
 #define BUTTON_PRESSED_BIT (1 << 0)
-#define DEBOUNCE_TICKS 50
+// TODO comment: why 50 ticks (bounce ~1-10 ms vs a real human press)
+#define DEBOUNCE_TICKS 70
 
 /* USER CODE END PD */
 
@@ -95,11 +97,13 @@ const osMutexAttr_t sharedMutex_attributes = {.name = "sharedMutex"};
 /* USER CODE BEGIN PV */
 
 // Global protected "shared variable"
+// TODO comment: range 100-200; who changes it; protected by sharedMutex
 uint8_t shared = 100;
 
 /* USER CODE END PV */
 
 EventGroupHandle_t buttonEvents = NULL;
+// TODO comment: why volatile (changed in the ISR, read in a task)
 volatile uint8_t counter = 0;
 
 /* Private function prototypes -----------------------------------------------*/
@@ -204,6 +208,8 @@ int main(void) {
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
+  // TODO comment: what this creates [REF: freertos.org page for
+  // xEventGroupCreate] + why the NULL check
   buttonEvents = xEventGroupCreate();
   if (buttonEvents == NULL)
     Error_Handler();
@@ -325,25 +331,33 @@ static void MX_GPIO_Init(void) {
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE; // FreeRTOS fills this in
+  // TODO comment: what static does here and why lastPress needs it
   static TickType_t lastPress = 0;
   TickType_t now = xTaskGetTickCountFromISR();
 
   if (GPIO_Pin == Button_Pin && buttonEvents != NULL) {
 
+    // TODO comment: why 'now - lastPress' survives the tick wrap
     if (now - lastPress >= DEBOUNCE_TICKS) {
       counter++;
 
+      // TODO comment: your interpretation of 'reset when it reaches 9' (values
+      // 0..8)
       if (counter >= 9) {
         counter = 0;
       }
 
       lastPress = now;
 
+      // TODO comment: why the FromISR version + what xHigherPriorityTaskWoken
+      // is [REF: freertos.org xEventGroupSetBitsFromISR]
       xEventGroupSetBitsFromISR(buttonEvents, BUTTON_PRESSED_BIT,
                                 &xHigherPriorityTaskWoken);
     }
   }
 
+  // TODO comment: what this does and why it's last [REF: freertos.org
+  // portYIELD_FROM_ISR]
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
@@ -359,6 +373,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 void StartDefaultTask(void *argument) {
   /* USER CODE BEGIN 5 */
 
+  // TODO comment: UART task: runs every 5 ticks, start of the period [REF:
+  // CMSIS-RTOS2 osKernelGetTickCount]
   uint32_t nextWakeTick = osKernelGetTickCount();
 
   /* Infinite loop */
@@ -368,19 +384,27 @@ void StartDefaultTask(void *argument) {
 
     char buf[32];
 
+    // TODO comment: drain everything waiting; why timeout 0 [REF: CMSIS-RTOS2
+    // osMessageQueueGet]
     while (osMessageQueueGet(UARTDataHandle, &msg, NULL, 0) == osOK) {
       int len = 0;
+      // TODO comment: label chosen from msg.source
       switch (msg.source) {
       case SRC_SHARED:
+        // TODO comment: format label + value into buf; why snprintf not sprintf
         len = snprintf(buf, sizeof(buf), "Shared: %u\r\n", msg.value);
         break;
       case SRC_COUNTER:
         len = snprintf(buf, sizeof(buf), "Counter: %u\r\n", msg.value);
         break;
       }
+      // TODO comment: send the text [REF: UM1850 page number for
+      // HAL_UART_Transmit]
       HAL_UART_Transmit(&huart1, (const uint8_t *)buf, len, HAL_MAX_DELAY);
     }
 
+    // TODO comment: why osDelayUntil instead of osDelay [REF: CMSIS-RTOS2
+    // osDelayUntil]
     osDelayUntil(nextWakeTick);
   }
   /* USER CODE END 5 */
@@ -396,16 +420,21 @@ void StartDefaultTask(void *argument) {
 void StartIncreaseVar(void *argument) {
   /* USER CODE BEGIN StartIncreaseVar */
 
+  // TODO comment: IncreaseVar: every 10 ticks, next target built from the
+  // previous one
   uint32_t timeToNextWakeup = osKernelGetTickCount();
 
   /* Infinite loop */
   for (;;) {
     timeToNextWakeup += 10;
 
+    // TODO comment: why the mutex; why waiting forever is safe here [REF:
+    // CMSIS-RTOS2 osMutexAcquire]
     osMutexAcquire(sharedMutexHandle, osWaitForever);
 
     shared++;
 
+    // TODO comment: wrap rule from the spec
     if (shared > 200) {
       shared = 100;
     }
@@ -414,8 +443,12 @@ void StartIncreaseVar(void *argument) {
     msg.source = SRC_SHARED;
     msg.value = shared;
 
+    // TODO comment: release BEFORE sending to the queue (why) [REF: CMSIS-RTOS2
+    // osMutexRelease]
     osMutexRelease(sharedMutexHandle);
 
+    // TODO comment: why timeout 5 and not forever [REF: CMSIS-RTOS2
+    // osMessageQueuePut]
     osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
     osDelayUntil(timeToNextWakeup);
   }
@@ -432,15 +465,18 @@ void StartIncreaseVar(void *argument) {
 void StartDecreaseVar(void *argument) {
   /* USER CODE BEGIN StartDecreaseVar */
 
+  // TODO comment: DecreaseVar: every 12 ticks
   uint32_t timeToNextWakeup = osKernelGetTickCount();
 
   /* Infinite loop */
   for (;;) {
     timeToNextWakeup += 12;
 
+    // TODO comment: same mutex as IncreaseVar
     osMutexAcquire(sharedMutexHandle, osWaitForever);
     shared--;
 
+    // TODO comment: wrap rule; why < and not <=
     if (shared < 100) {
       shared = 200;
     }
@@ -449,6 +485,7 @@ void StartDecreaseVar(void *argument) {
     msg.source = SRC_SHARED;
     msg.value = shared;
 
+    // TODO comment: release before sending
     osMutexRelease(sharedMutexHandle);
 
     osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
@@ -468,9 +505,12 @@ void StartCalcSwitch1(void *argument) {
   /* USER CODE BEGIN StartCalcSwitch1 */
   /* Infinite loop */
   for (;;) {
+    // TODO comment: wait up to 2 ticks for the button bit; your choices for
+    // each argument [REF: freertos.org xEventGroupWaitBits]
     EventBits_t bits = xEventGroupWaitBits(buttonEvents, BUTTON_PRESSED_BIT,
                                            pdTRUE, pdFALSE, 2);
     if ((bits & BUTTON_PRESSED_BIT) == BUTTON_PRESSED_BIT) {
+      // TODO comment: why read counter once into a copy
       uint8_t counterCopy = counter;
 
       counterCopy *= 10;
