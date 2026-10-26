@@ -22,7 +22,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "event_groups.h"
 #include <stdio.h>
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,6 +45,8 @@ typedef struct {
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define BUTTON_PRESSED_BIT (1 << 0)
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,47 +60,46 @@ UART_HandleTypeDef huart1;
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .stack_size = 256 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+    .name = "defaultTask",
+    .stack_size = 256 * 4,
+    .priority = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for IncreaseVar */
 osThreadId_t IncreaseVarHandle;
 const osThreadAttr_t IncreaseVar_attributes = {
-  .name = "IncreaseVar",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+    .name = "IncreaseVar",
+    .stack_size = 128 * 4,
+    .priority = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for DecreaseVar */
 osThreadId_t DecreaseVarHandle;
 const osThreadAttr_t DecreaseVar_attributes = {
-  .name = "DecreaseVar",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+    .name = "DecreaseVar",
+    .stack_size = 128 * 4,
+    .priority = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for CalcSwitch1 */
 osThreadId_t CalcSwitch1Handle;
 const osThreadAttr_t CalcSwitch1_attributes = {
-  .name = "CalcSwitch1",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+    .name = "CalcSwitch1",
+    .stack_size = 128 * 4,
+    .priority = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for UARTData */
 osMessageQueueId_t UARTDataHandle;
-const osMessageQueueAttr_t UARTData_attributes = {
-  .name = "UARTData"
-};
+const osMessageQueueAttr_t UARTData_attributes = {.name = "UARTData"};
 /* Definitions for sharedMutex */
 osMutexId_t sharedMutexHandle;
-const osMutexAttr_t sharedMutex_attributes = {
-  .name = "sharedMutex"
-};
+const osMutexAttr_t sharedMutex_attributes = {.name = "sharedMutex"};
 /* USER CODE BEGIN PV */
 
 // Global protected "shared variable"
 uint8_t shared = 100;
 
 /* USER CODE END PV */
+
+EventGroupHandle_t buttonEvents = NULL;
+volatile uint8_t counter = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -117,11 +120,10 @@ void StartCalcSwitch1(void *argument);
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
+ * @brief  The application entry point.
+ * @retval int
+ */
+int main(void) {
 
   /* USER CODE BEGIN 1 */
 
@@ -129,7 +131,8 @@ int main(void)
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
+   */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -170,7 +173,8 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of UARTData */
-  UARTDataHandle = osMessageQueueNew (5, sizeof(uart_msg_t), &UARTData_attributes);
+  UARTDataHandle =
+      osMessageQueueNew(5, sizeof(uart_msg_t), &UARTData_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -178,16 +182,20 @@ int main(void)
 
   /* Create the thread(s) */
   /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  defaultTaskHandle =
+      osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* creation of IncreaseVar */
-  IncreaseVarHandle = osThreadNew(StartIncreaseVar, NULL, &IncreaseVar_attributes);
+  IncreaseVarHandle =
+      osThreadNew(StartIncreaseVar, NULL, &IncreaseVar_attributes);
 
   /* creation of DecreaseVar */
-  DecreaseVarHandle = osThreadNew(StartDecreaseVar, NULL, &DecreaseVar_attributes);
+  DecreaseVarHandle =
+      osThreadNew(StartDecreaseVar, NULL, &DecreaseVar_attributes);
 
   /* creation of CalcSwitch1 */
-  CalcSwitch1Handle = osThreadNew(StartCalcSwitch1, NULL, &CalcSwitch1_attributes);
+  CalcSwitch1Handle =
+      osThreadNew(StartCalcSwitch1, NULL, &CalcSwitch1_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -195,6 +203,9 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
+  buttonEvents = xEventGroupCreate();
+  if (buttonEvents == NULL)
+    Error_Handler();
   /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
@@ -213,17 +224,16 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
+ * @brief System Clock Configuration
+ * @retval None
+ */
+void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
@@ -231,33 +241,30 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
-  {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
     Error_Handler();
   }
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART1_UART_Init(void) {
 
   /* USER CODE BEGIN USART1_Init 0 */
 
@@ -274,23 +281,20 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.Mode = UART_MODE_TX_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
+  if (HAL_UART_Init(&huart1) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
@@ -318,6 +322,23 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE; // FreeRTOS fills this in
+
+  if (GPIO_Pin == Button_Pin && buttonEvents != NULL) {
+    counter++;
+
+    if (counter >= 9) {
+      counter = 0;
+    }
+
+    xEventGroupSetBitsFromISR(buttonEvents, BUTTON_PRESSED_BIT,
+                              &xHigherPriorityTaskWoken);
+  }
+
+  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -327,8 +348,7 @@ static void MX_GPIO_Init(void)
  * @retval None
  */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
-{
+void StartDefaultTask(void *argument) {
   /* USER CODE BEGIN 5 */
 
   uint32_t nextWakeTick = osKernelGetTickCount();
@@ -365,8 +385,7 @@ void StartDefaultTask(void *argument)
  * @retval None
  */
 /* USER CODE END Header_StartIncreaseVar */
-void StartIncreaseVar(void *argument)
-{
+void StartIncreaseVar(void *argument) {
   /* USER CODE BEGIN StartIncreaseVar */
 
   uint32_t timeToNextWakeup = osKernelGetTickCount();
@@ -402,8 +421,7 @@ void StartIncreaseVar(void *argument)
  * @retval None
  */
 /* USER CODE END Header_StartDecreaseVar */
-void StartDecreaseVar(void *argument)
-{
+void StartDecreaseVar(void *argument) {
   /* USER CODE BEGIN StartDecreaseVar */
 
   uint32_t timeToNextWakeup = osKernelGetTickCount();
@@ -433,37 +451,45 @@ void StartDecreaseVar(void *argument)
 
 /* USER CODE BEGIN Header_StartCalcSwitch1 */
 /**
-* @brief Function implementing the CalcSwitch1 thread.
-* @param argument: Not used
-* @retval None
-*/
+ * @brief Function implementing the CalcSwitch1 thread.
+ * @param argument: Not used
+ * @retval None
+ */
 /* USER CODE END Header_StartCalcSwitch1 */
-void StartCalcSwitch1(void *argument)
-{
+void StartCalcSwitch1(void *argument) {
   /* USER CODE BEGIN StartCalcSwitch1 */
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
+  for (;;) {
+    EventBits_t bits = xEventGroupWaitBits(buttonEvents, BUTTON_PRESSED_BIT,
+                                           pdTRUE, pdFALSE, 2);
+    if ((bits & BUTTON_PRESSED_BIT) == BUTTON_PRESSED_BIT) {
+      uint8_t counterCopy = counter;
+
+      counterCopy *= 10;
+
+      uart_msg_t msg;
+      msg.source = SRC_COUNTER;
+      msg.value = counterCopy;
+
+      osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
+    }
   }
   /* USER CODE END StartCalcSwitch1 */
 }
 
 /**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM4 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
+ * @brief  Period elapsed callback in non blocking mode
+ * @note   This function is called  when TIM4 interrupt took place, inside
+ * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+ * a global variable "uwTick" used as application time base.
+ * @param  htim : TIM handle
+ * @retval None
+ */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM4)
-  {
+  if (htim->Instance == TIM4) {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
@@ -472,11 +498,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
+void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
@@ -486,14 +511,13 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
+void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
