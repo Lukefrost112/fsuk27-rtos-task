@@ -46,6 +46,7 @@ typedef struct {
 /* USER CODE BEGIN PD */
 
 #define BUTTON_PRESSED_BIT (1 << 0)
+#define DEBOUNCE_TICKS 50
 
 /* USER CODE END PD */
 
@@ -324,16 +325,23 @@ static void MX_GPIO_Init(void) {
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE; // FreeRTOS fills this in
+  static TickType_t lastPress = 0;
+  TickType_t now = xTaskGetTickCountFromISR();
 
   if (GPIO_Pin == Button_Pin && buttonEvents != NULL) {
-    counter++;
 
-    if (counter >= 9) {
-      counter = 0;
+    if (now - lastPress >= DEBOUNCE_TICKS) {
+      counter++;
+
+      if (counter >= 9) {
+        counter = 0;
+      }
+
+      lastPress = now;
+
+      xEventGroupSetBitsFromISR(buttonEvents, BUTTON_PRESSED_BIT,
+                                &xHigherPriorityTaskWoken);
     }
-
-    xEventGroupSetBitsFromISR(buttonEvents, BUTTON_PRESSED_BIT,
-                              &xHigherPriorityTaskWoken);
   }
 
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
