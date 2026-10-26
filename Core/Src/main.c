@@ -57,7 +57,7 @@ UART_HandleTypeDef huart1;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
     .name = "defaultTask",
-    .stack_size = 128 * 4,
+    .stack_size = 256 * 4,
     .priority = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for IncreaseVar */
@@ -293,10 +293,30 @@ static void MX_GPIO_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument) {
   /* USER CODE BEGIN 5 */
+
+  uint32_t nextWakeTick = osKernelGetTickCount();
+
   /* Infinite loop */
   for (;;) {
-    osDelay(1000);
-    HAL_UART_Transmit(&huart1, (const uint8_t *)"hello\r\n", 7, HAL_MAX_DELAY);
+    nextWakeTick += 5;
+    uart_msg_t msg;
+
+    char buf[32];
+
+    while (osMessageQueueGet(UARTDataHandle, &msg, NULL, 0) == osOK) {
+      int len = 0;
+      switch (msg.source) {
+      case SRC_SHARED:
+        len = snprintf(buf, sizeof(buf), "Shared: %u\r\n", msg.value);
+        break;
+      case SRC_COUNTER:
+        len = snprintf(buf, sizeof(buf), "Counter: %u\r\n", msg.value);
+        break;
+      }
+      HAL_UART_Transmit(&huart1, (const uint8_t *)buf, len, HAL_MAX_DELAY);
+    }
+
+    osDelayUntil(nextWakeTick);
   }
   /* USER CODE END 5 */
 }
