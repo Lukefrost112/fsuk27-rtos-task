@@ -33,7 +33,7 @@
 // Enum to store where the data came from (shared, counter)
 typedef enum { SRC_SHARED, SRC_COUNTER } source_t;
 
-// a struct holding one uart message (where it came from and the value of thein
+// a struct holding one uart message (where it came from and the value of the
 // message)
 typedef struct {
   source_t source;
@@ -45,10 +45,13 @@ typedef struct {
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-// TODO comment: what event this bit means and why bit 0
+// Button press event bit
 #define BUTTON_PRESSED_BIT (1 << 0)
-// TODO comment: why 50 ticks (bounce ~1-10 ms vs a real human press)
-#define DEBOUNCE_TICKS 70
+
+// Minimum ticks between button presses
+// 50 because the avg time between bounces is ~10ms and between fast human
+// presses is ~100ms So it's a good in-between
+#define DEBOUNCE_TICKS 50
 
 /* USER CODE END PD */
 
@@ -96,15 +99,17 @@ osMutexId_t sharedMutexHandle;
 const osMutexAttr_t sharedMutex_attributes = {.name = "sharedMutex"};
 /* USER CODE BEGIN PV */
 
-// Global protected "shared variable"
-// TODO comment: range 100-200; who changes it; protected by sharedMutex
+// Global shared variable: changed by IncreaseVar and DecreaseVar, kept in
+// 100-200, protected by sharedMutex
 uint8_t shared = 100;
 
-/* USER CODE END PV */
-
+// Event group the button ISR uses to wake CalcSwitch1 (NULL until created)
 EventGroupHandle_t buttonEvents = NULL;
-// TODO comment: why volatile (changed in the ISR, read in a task)
+// volatile since the ISR can change it at any time, so it must always be
+// read from RAM
 volatile uint8_t counter = 0;
+
+/* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -208,8 +213,10 @@ int main(void) {
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
-  // TODO comment: what this creates [REF: freertos.org page for
-  // xEventGroupCreate] + why the NULL check
+  // REF:
+  // https://freertos.org/Documentation/02-Kernel/04-API-references/12-Event-groups-or-flags/01-xEventGroupCreate
+  // Creates a new RTOS event group and the NULL check is to ensure it was
+  // created successfully
   buttonEvents = xEventGroupCreate();
   if (buttonEvents == NULL)
     Error_Handler();
@@ -329,35 +336,41 @@ static void MX_GPIO_Init(void) {
 
 /* USER CODE BEGIN 4 */
 
+// REF: UM1850 p.228 (HAL_GPIO_EXTI_Callback, weak hook we override)
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE; // FreeRTOS fills this in
-  // TODO comment: what static does here and why lastPress needs it
+  // Static lastPress variable to make sure it persists between function calls
   static TickType_t lastPress = 0;
+  // REF: FreeRTOS task.h:1360 / https://www.freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities
   TickType_t now = xTaskGetTickCountFromISR();
 
   if (GPIO_Pin == Button_Pin && buttonEvents != NULL) {
 
-    // TODO comment: why 'now - lastPress' survives the tick wrap
+    // The difference survives the wrap of uint32_t
     if (now - lastPress >= DEBOUNCE_TICKS) {
       counter++;
 
-      // TODO comment: your interpretation of 'reset when it reaches 9' (values
-      // 0..8)
+      // The sheet didnt specify directly if 9 is allowed so this code assumes
+      // it isnt
       if (counter >= 9) {
         counter = 0;
       }
 
       lastPress = now;
 
-      // TODO comment: why the FromISR version + what xHigherPriorityTaskWoken
-      // is [REF: freertos.org xEventGroupSetBitsFromISR]
+      // REF:
+      // https://freertos.org/Documentation/02-Kernel/04-API-references/12-Event-groups-or-flags/06-xEventGroupSetBitsFromISR
+      // we use the from ISR version here because FreeRTOS doesnt allow non
+      // deterministic operation in an interrupt so it defers setting the bit
+      // to the timer daemon task
       xEventGroupSetBitsFromISR(buttonEvents, BUTTON_PRESSED_BIT,
                                 &xHigherPriorityTaskWoken);
     }
   }
 
-  // TODO comment: what this does and why it's last [REF: freertos.org
-  // portYIELD_FROM_ISR]
+  // FreeRTOS book v1.1.0 §7.2.5 (p.160); Cortex-M3 port: portmacro.h:93
+  // Requests if xHigherPriorityTaskWoken is true that a switch occurs if not
+  // then just does nothing
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
@@ -373,8 +386,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 void StartDefaultTask(void *argument) {
   /* USER CODE BEGIN 5 */
 
-  // TODO comment: UART task: runs every 5 ticks, start of the period [REF:
-  // CMSIS-RTOS2 osKernelGetTickCount]
+  // This initializes the nextWakeTick variable to be used in the infinite loop
+  // REF: CMSIS-RTOS2 osKernelGetTickCount: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__KernelCtrl.html
   uint32_t nextWakeTick = osKernelGetTickCount();
 
   /* Infinite loop */
@@ -384,27 +397,33 @@ void StartDefaultTask(void *argument) {
 
     char buf[32];
 
-    // TODO comment: drain everything waiting; why timeout 0 [REF: CMSIS-RTOS2
-    // osMessageQueueGet]
+    // Drains the whole queue: takes messages until it's empty, then stops
+      // (timeout 0 = don't wait for more)
+    // REF: CMSIS-RTOS2 osMessageQueueGet: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Message.html
     while (osMessageQueueGet(UARTDataHandle, &msg, NULL, 0) == osOK) {
       int len = 0;
-      // TODO comment: label chosen from msg.source
+
+      // Switch case on where the msg came from (shared or counter)
       switch (msg.source) {
       case SRC_SHARED:
-        // TODO comment: format label + value into buf; why snprintf not sprintf
+
+        // snprintf formats the label + value into buf; the n limits it to
+        // sizeof(buf) so it can never write past the end of the buffer
         len = snprintf(buf, sizeof(buf), "Shared: %u\r\n", msg.value);
         break;
       case SRC_COUNTER:
         len = snprintf(buf, sizeof(buf), "Counter: %u\r\n", msg.value);
         break;
       }
-      // TODO comment: send the text [REF: UM1850 page number for
-      // HAL_UART_Transmit]
+
+      // send the text thru the UART peripheral
+      // REF: UM1850 p.556 (HAL_UART_Transmit)
       HAL_UART_Transmit(&huart1, (const uint8_t *)buf, len, HAL_MAX_DELAY);
     }
 
-    // TODO comment: why osDelayUntil instead of osDelay [REF: CMSIS-RTOS2
-    // osDelayUntil]
+    // osDelayUntil to ensure it runs every 5 ticks no matter how much time it
+    // took to get the work done
+    // REF: CMSIS-RTOS2 osDelayUntil: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Wait.html
     osDelayUntil(nextWakeTick);
   }
   /* USER CODE END 5 */
@@ -420,21 +439,23 @@ void StartDefaultTask(void *argument) {
 void StartIncreaseVar(void *argument) {
   /* USER CODE BEGIN StartIncreaseVar */
 
-  // TODO comment: IncreaseVar: every 10 ticks, next target built from the
-  // previous one
+  // initializes timeToNextWakeUp to current ticks
+  // REF: CMSIS-RTOS2 osKernelGetTickCount: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__KernelCtrl.html
   uint32_t timeToNextWakeup = osKernelGetTickCount();
 
   /* Infinite loop */
   for (;;) {
     timeToNextWakeup += 10;
 
-    // TODO comment: why the mutex; why waiting forever is safe here [REF:
-    // CMSIS-RTOS2 osMutexAcquire]
+    // mutex is used to make sure the shared variable is protected and
+    // osWaitForever is safe since the other task only uses it a few
+    // microseconds
+    // REF: CMSIS-RTOS2 osMutexAcquire: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__MutexMgmt.html
     osMutexAcquire(sharedMutexHandle, osWaitForever);
 
     shared++;
 
-    // TODO comment: wrap rule from the spec
+    // Wrapping according to the spec sheet
     if (shared > 200) {
       shared = 100;
     }
@@ -443,13 +464,16 @@ void StartIncreaseVar(void *argument) {
     msg.source = SRC_SHARED;
     msg.value = shared;
 
-    // TODO comment: release BEFORE sending to the queue (why) [REF: CMSIS-RTOS2
-    // osMutexRelease]
+    // we release before sending it to the uart queue because if the queue hangs
+    // it doesnt stop runtime
+    // REF: CMSIS-RTOS2 osMutexRelease: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__MutexMgmt.html
     osMutexRelease(sharedMutexHandle);
 
-    // TODO comment: why timeout 5 and not forever [REF: CMSIS-RTOS2
-    // osMessageQueuePut]
+    // timeout is 5 since thats how long it takes for the queue to clear and if
+    // the clear queue task is hung it should NOT hang this task too
+    // REF: CMSIS-RTOS2 osMessageQueuePut: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Message.html
     osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
+    // REF: CMSIS-RTOS2 osDelayUntil: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Wait.html
     osDelayUntil(timeToNextWakeup);
   }
   /* USER CODE END StartIncreaseVar */
@@ -465,18 +489,20 @@ void StartIncreaseVar(void *argument) {
 void StartDecreaseVar(void *argument) {
   /* USER CODE BEGIN StartDecreaseVar */
 
-  // TODO comment: DecreaseVar: every 12 ticks
+  // DecreaseVar: every 12 ticks
+  // REF: CMSIS-RTOS2 osKernelGetTickCount: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__KernelCtrl.html
   uint32_t timeToNextWakeup = osKernelGetTickCount();
 
   /* Infinite loop */
   for (;;) {
     timeToNextWakeup += 12;
 
-    // TODO comment: same mutex as IncreaseVar
+    // same mutex as IncreaseVar
+    // REF: CMSIS-RTOS2 osMutexAcquire: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__MutexMgmt.html
     osMutexAcquire(sharedMutexHandle, osWaitForever);
     shared--;
 
-    // TODO comment: wrap rule; why < and not <=
+    // here we use < and not <= since 100 is allowed as a value
     if (shared < 100) {
       shared = 200;
     }
@@ -485,10 +511,13 @@ void StartDecreaseVar(void *argument) {
     msg.source = SRC_SHARED;
     msg.value = shared;
 
-    // TODO comment: release before sending
+    // release before sending
+    // REF: CMSIS-RTOS2 osMutexRelease: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__MutexMgmt.html
     osMutexRelease(sharedMutexHandle);
 
+    // REF: CMSIS-RTOS2 osMessageQueuePut: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Message.html
     osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
+    // REF: CMSIS-RTOS2 osDelayUntil: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Wait.html
     osDelayUntil(timeToNextWakeup);
   }
   /* USER CODE END StartDecreaseVar */
@@ -505,12 +534,15 @@ void StartCalcSwitch1(void *argument) {
   /* USER CODE BEGIN StartCalcSwitch1 */
   /* Infinite loop */
   for (;;) {
-    // TODO comment: wait up to 2 ticks for the button bit; your choices for
-    // each argument [REF: freertos.org xEventGroupWaitBits]
+
+    // waits for up to 2 ticks to read the button bit
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/12-Event-groups-or-flags/04-xEventGroupWaitBits
     EventBits_t bits = xEventGroupWaitBits(buttonEvents, BUTTON_PRESSED_BIT,
                                            pdTRUE, pdFALSE, 2);
     if ((bits & BUTTON_PRESSED_BIT) == BUTTON_PRESSED_BIT) {
-      // TODO comment: why read counter once into a copy
+
+      // we copy it since the value of the counter can change between the
+      // multiply and the send
       uint8_t counterCopy = counter;
 
       counterCopy *= 10;
@@ -519,6 +551,7 @@ void StartCalcSwitch1(void *argument) {
       msg.source = SRC_COUNTER;
       msg.value = counterCopy;
 
+      // REF: CMSIS-RTOS2 osMessageQueuePut: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Message.html
       osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
     }
   }
