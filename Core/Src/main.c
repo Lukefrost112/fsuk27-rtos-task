@@ -136,8 +136,11 @@ int main(void)
   MX_GPIO_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/06-Queues/01-xQueueCreate
   UARTDataQueue = xQueueCreate(5, sizeof(uart_msg_t));
+  // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/10-Semaphore-and-Mutexes/06-xSemaphoreCreateMutex
   sharedMutex = xSemaphoreCreateMutex();
+  // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/12-Event-groups-or-flags/01-xEventGroupCreate
   buttonEvents = xEventGroupCreate();
 
   if (UARTDataQueue == NULL)
@@ -147,19 +150,24 @@ int main(void)
   if (buttonEvents == NULL)
     Error_Handler();
 
+  // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/01-Task-creation/01-xTaskCreate
   if (xTaskCreate(UartTask, "UART", 256, NULL, tskIDLE_PRIORITY + 1, NULL) !=
       pdPASS)
     Error_Handler();
+  // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/01-Task-creation/01-xTaskCreate
   if (xTaskCreate(IncreaseVar, "IncreaseVar", 128, NULL, tskIDLE_PRIORITY + 1,
                   NULL) != pdPASS)
     Error_Handler();
+  // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/01-Task-creation/01-xTaskCreate
   if (xTaskCreate(DecreaseVar, "DecreaseVar", 128, NULL, tskIDLE_PRIORITY + 1,
                   NULL) != pdPASS)
     Error_Handler();
+  // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/01-Task-creation/01-xTaskCreate
   if (xTaskCreate(CalcSwitch1, "CalcSwitch1", 128, NULL, tskIDLE_PRIORITY + 1,
                   NULL) != pdPASS)
     Error_Handler();
 
+  // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/04-RTOS-kernel-control/03-vTaskStartScheduler
   vTaskStartScheduler();
 
   /* USER CODE END 2 */
@@ -285,7 +293,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE; // FreeRTOS fills this in
   // Static lastPress variable to make sure it persists between function calls
   static TickType_t lastPress = 0;
-  // REF: FreeRTOS task.h:1360 /
+  // REF: FreeRTOS/Kernel/include/task.h:1466 /
   // https://www.freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities
   TickType_t now = xTaskGetTickCountFromISR();
 
@@ -320,16 +328,17 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 }
 
 void IncreaseVar(void *argument) {
-  // initializes timeToNextWakeUp to current ticks
+  // lastWake = the tick this task started at; vTaskDelayUntil moves it forward
+  // REF: task.h:1448 / https://freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities
   TickType_t lastWake = xTaskGetTickCount();
 
   /* Infinite loop */
   for (;;) {
 
     // mutex is used to make sure the shared variable is protected and
-    // osWaitForever is safe since the other task only uses it a few
-    // microseconds
-    // REF: CMSIS-RTOS2 osMutexAcquire:
+    // portMAX_DELAY (wait forever) is safe since the other task only holds it
+    // for a few microseconds
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/10-Semaphore-and-Mutexes/12-xSemaphoreTake
     xSemaphoreTake(sharedMutex, portMAX_DELAY);
 
     shared++;
@@ -345,12 +354,15 @@ void IncreaseVar(void *argument) {
 
     // we release before sending it to the uart queue because if the queue hangs
     // it doesnt stop runtime
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/10-Semaphore-and-Mutexes/15-xSemaphoreGive
     xSemaphoreGive(sharedMutex);
 
     // timeout is 5 since thats how long it takes for the queue to clear and if
     // the clear queue task is hung it should NOT hang this task too
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/06-Queues/03-xQueueSend
     xQueueSend(UARTDataQueue, &msg, 5);
 
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/02-Task-control/02-vTaskDelayUntil
     vTaskDelayUntil(&lastWake, 10);
   }
 }
@@ -358,11 +370,13 @@ void IncreaseVar(void *argument) {
 void DecreaseVar(void *argument) {
 
   // DecreaseVar: every 12 ticks
+  // REF: task.h:1448 / https://freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities
   TickType_t lastWake = xTaskGetTickCount();
   /* Infinite loop */
   for (;;) {
 
     // same mutex as IncreaseVar
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/10-Semaphore-and-Mutexes/12-xSemaphoreTake
     xSemaphoreTake(sharedMutex, portMAX_DELAY);
     shared--;
 
@@ -376,9 +390,12 @@ void DecreaseVar(void *argument) {
     msg.value = shared;
 
     // release before sending
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/10-Semaphore-and-Mutexes/15-xSemaphoreGive
     xSemaphoreGive(sharedMutex);
 
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/06-Queues/03-xQueueSend
     xQueueSend(UARTDataQueue, &msg, 5);
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/02-Task-control/02-vTaskDelayUntil
     vTaskDelayUntil(&lastWake, 12);
   }
 }
@@ -404,14 +421,15 @@ void CalcSwitch1(void *argument) {
       msg.source = SRC_COUNTER;
       msg.value = counterCopy;
 
+      // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/06-Queues/03-xQueueSend
       xQueueSend(UARTDataQueue, &msg, 5);
     }
   }
 }
 
 void UartTask(void *argument) {
-  // This initializes the nextWakeTick variable to be used in the infinite loop
-
+  // lastWake = the tick this task started at; vTaskDelayUntil moves it forward
+  // REF: task.h:1448 / https://freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities
   TickType_t lastWake = xTaskGetTickCount();
   /* Infinite loop */
   for (;;) {
@@ -421,6 +439,7 @@ void UartTask(void *argument) {
 
     // Drains the whole queue: takes messages until it's empty, then stops
     // (timeout 0 = don't wait for more)
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/06-Queues/09-xQueueReceive
     while (xQueueReceive(UARTDataQueue, &msg, 0) == pdPASS) {
       int len = 0;
 
@@ -442,8 +461,9 @@ void UartTask(void *argument) {
       HAL_UART_Transmit(&huart1, (const uint8_t *)buf, len, HAL_MAX_DELAY);
     }
 
-    // osDelayUntil to ensure it runs every 5 ticks no matter how much time it
+    // vTaskDelayUntil to ensure it runs every 5 ticks no matter how much time it
     // took to get the work done
+    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/02-Task-control/02-vTaskDelayUntil
     vTaskDelayUntil(&lastWake, 5);
   }
 }
