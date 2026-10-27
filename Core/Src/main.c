@@ -18,11 +18,14 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "FreeRTOS.h"
 #include "event_groups.h"
+#include "queue.h"
+#include "semphr.h"
+#include "task.h"
 #include <stdio.h>
 
 /* USER CODE END Includes */
@@ -63,40 +66,6 @@ typedef struct {
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart1;
 
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-    .name = "defaultTask",
-    .stack_size = 256 * 4,
-    .priority = (osPriority_t)osPriorityNormal,
-};
-/* Definitions for IncreaseVar */
-osThreadId_t IncreaseVarHandle;
-const osThreadAttr_t IncreaseVar_attributes = {
-    .name = "IncreaseVar",
-    .stack_size = 128 * 4,
-    .priority = (osPriority_t)osPriorityNormal,
-};
-/* Definitions for DecreaseVar */
-osThreadId_t DecreaseVarHandle;
-const osThreadAttr_t DecreaseVar_attributes = {
-    .name = "DecreaseVar",
-    .stack_size = 128 * 4,
-    .priority = (osPriority_t)osPriorityNormal,
-};
-/* Definitions for CalcSwitch1 */
-osThreadId_t CalcSwitch1Handle;
-const osThreadAttr_t CalcSwitch1_attributes = {
-    .name = "CalcSwitch1",
-    .stack_size = 128 * 4,
-    .priority = (osPriority_t)osPriorityNormal,
-};
-/* Definitions for UARTData */
-osMessageQueueId_t UARTDataHandle;
-const osMessageQueueAttr_t UARTData_attributes = {.name = "UARTData"};
-/* Definitions for sharedMutex */
-osMutexId_t sharedMutexHandle;
-const osMutexAttr_t sharedMutex_attributes = {.name = "sharedMutex"};
 /* USER CODE BEGIN PV */
 
 // Global shared variable: changed by IncreaseVar and DecreaseVar, kept in
@@ -105,6 +74,13 @@ uint8_t shared = 100;
 
 // Event group the button ISR uses to wake CalcSwitch1 (NULL until created)
 EventGroupHandle_t buttonEvents = NULL;
+
+// UARTQueue to hold the data to be sent across uart
+QueueHandle_t UARTDataQueue = NULL;
+
+// Mutex for the global shared variable
+SemaphoreHandle_t sharedMutex = NULL;
+
 // volatile since the ISR can change it at any time, so it must always be
 // read from RAM
 volatile uint8_t counter = 0;
@@ -115,12 +91,12 @@ volatile uint8_t counter = 0;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
-void StartDefaultTask(void *argument);
-void StartIncreaseVar(void *argument);
-void StartDecreaseVar(void *argument);
-void StartCalcSwitch1(void *argument);
-
 /* USER CODE BEGIN PFP */
+
+void UartTask(void *argument);
+void IncreaseVar(void *argument);
+void DecreaseVar(void *argument);
+void CalcSwitch1(void *argument);
 
 /* USER CODE END PFP */
 
@@ -130,10 +106,11 @@ void StartCalcSwitch1(void *argument);
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
-int main(void) {
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
 
   /* USER CODE BEGIN 1 */
 
@@ -141,8 +118,7 @@ int main(void) {
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
-   */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -160,72 +136,33 @@ int main(void) {
   MX_GPIO_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
-  /* USER CODE END 2 */
-
-  /* Init scheduler */
-  osKernelInitialize();
-  /* Create the mutex(es) */
-  /* creation of sharedMutex */
-  sharedMutexHandle = osMutexNew(&sharedMutex_attributes);
-
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
-
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
-  /* USER CODE END RTOS_SEMAPHORES */
-
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
-  /* USER CODE END RTOS_TIMERS */
-
-  /* Create the queue(s) */
-  /* creation of UARTData */
-  UARTDataHandle =
-      osMessageQueueNew(5, sizeof(uart_msg_t), &UARTData_attributes);
-
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
-
-  /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle =
-      osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
-
-  /* creation of IncreaseVar */
-  IncreaseVarHandle =
-      osThreadNew(StartIncreaseVar, NULL, &IncreaseVar_attributes);
-
-  /* creation of DecreaseVar */
-  DecreaseVarHandle =
-      osThreadNew(StartDecreaseVar, NULL, &DecreaseVar_attributes);
-
-  /* creation of CalcSwitch1 */
-  CalcSwitch1Handle =
-      osThreadNew(StartCalcSwitch1, NULL, &CalcSwitch1_attributes);
-
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
-  /* USER CODE END RTOS_THREADS */
-
-  /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
-  // REF:
-  // https://freertos.org/Documentation/02-Kernel/04-API-references/12-Event-groups-or-flags/01-xEventGroupCreate
-  // Creates a new RTOS event group and the NULL check is to ensure it was
-  // created successfully
+  UARTDataQueue = xQueueCreate(5, sizeof(uart_msg_t));
+  sharedMutex = xSemaphoreCreateMutex();
   buttonEvents = xEventGroupCreate();
+
+  if (UARTDataQueue == NULL)
+    Error_Handler();
+  if (sharedMutex == NULL)
+    Error_Handler();
   if (buttonEvents == NULL)
     Error_Handler();
-  /* USER CODE END RTOS_EVENTS */
 
-  /* Start scheduler */
-  osKernelStart();
+  if (xTaskCreate(UartTask, "UART", 256, NULL, tskIDLE_PRIORITY + 1, NULL) !=
+      pdPASS)
+    Error_Handler();
+  if (xTaskCreate(IncreaseVar, "IncreaseVar", 128, NULL, tskIDLE_PRIORITY + 1,
+                  NULL) != pdPASS)
+    Error_Handler();
+  if (xTaskCreate(DecreaseVar, "DecreaseVar", 128, NULL, tskIDLE_PRIORITY + 1,
+                  NULL) != pdPASS)
+    Error_Handler();
+  if (xTaskCreate(CalcSwitch1, "CalcSwitch1", 128, NULL, tskIDLE_PRIORITY + 1,
+                  NULL) != pdPASS)
+    Error_Handler();
 
-  /* We should never get here as control is now taken by the scheduler */
+  vTaskStartScheduler();
+
+  /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -238,16 +175,17 @@ int main(void) {
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
-void SystemClock_Config(void) {
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
@@ -255,30 +193,33 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
     Error_Handler();
   }
 }
 
 /**
- * @brief USART1 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_USART1_UART_Init(void) {
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
 
   /* USER CODE BEGIN USART1_Init 0 */
 
@@ -295,20 +236,23 @@ static void MX_USART1_UART_Init(void) {
   huart1.Init.Mode = UART_MODE_TX_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK) {
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
-static void MX_GPIO_Init(void) {
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
@@ -341,7 +285,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE; // FreeRTOS fills this in
   // Static lastPress variable to make sure it persists between function calls
   static TickType_t lastPress = 0;
-  // REF: FreeRTOS task.h:1360 / https://www.freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities
+  // REF: FreeRTOS task.h:1360 /
+  // https://www.freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities
   TickType_t now = xTaskGetTickCountFromISR();
 
   if (GPIO_Pin == Button_Pin && buttonEvents != NULL) {
@@ -374,33 +319,109 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-/* USER CODE END 4 */
-
-/* USER CODE BEGIN Header_StartDefaultTask */
-/**
- * @brief  Function implementing the defaultTask thread.
- * @param  argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument) {
-  /* USER CODE BEGIN 5 */
-
-  // This initializes the nextWakeTick variable to be used in the infinite loop
-  // REF: CMSIS-RTOS2 osKernelGetTickCount: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__KernelCtrl.html
-  uint32_t nextWakeTick = osKernelGetTickCount();
+void IncreaseVar(void *argument) {
+  // initializes timeToNextWakeUp to current ticks
+  TickType_t lastWake = xTaskGetTickCount();
 
   /* Infinite loop */
   for (;;) {
-    nextWakeTick += 5;
+
+    // mutex is used to make sure the shared variable is protected and
+    // osWaitForever is safe since the other task only uses it a few
+    // microseconds
+    // REF: CMSIS-RTOS2 osMutexAcquire:
+    xSemaphoreTake(sharedMutex, portMAX_DELAY);
+
+    shared++;
+
+    // Wrapping according to the spec sheet
+    if (shared > 200) {
+      shared = 100;
+    }
+
+    uart_msg_t msg;
+    msg.source = SRC_SHARED;
+    msg.value = shared;
+
+    // we release before sending it to the uart queue because if the queue hangs
+    // it doesnt stop runtime
+    xSemaphoreGive(sharedMutex);
+
+    // timeout is 5 since thats how long it takes for the queue to clear and if
+    // the clear queue task is hung it should NOT hang this task too
+    xQueueSend(UARTDataQueue, &msg, 5);
+
+    vTaskDelayUntil(&lastWake, 10);
+  }
+}
+
+void DecreaseVar(void *argument) {
+
+  // DecreaseVar: every 12 ticks
+  TickType_t lastWake = xTaskGetTickCount();
+  /* Infinite loop */
+  for (;;) {
+
+    // same mutex as IncreaseVar
+    xSemaphoreTake(sharedMutex, portMAX_DELAY);
+    shared--;
+
+    // here we use < and not <= since 100 is allowed as a value
+    if (shared < 100) {
+      shared = 200;
+    }
+
+    uart_msg_t msg;
+    msg.source = SRC_SHARED;
+    msg.value = shared;
+
+    // release before sending
+    xSemaphoreGive(sharedMutex);
+
+    xQueueSend(UARTDataQueue, &msg, 5);
+    vTaskDelayUntil(&lastWake, 12);
+  }
+}
+
+void CalcSwitch1(void *argument) {
+  /* Infinite loop */
+  for (;;) {
+
+    // waits for up to 2 ticks to read the button bit
+    // REF:
+    // https://freertos.org/Documentation/02-Kernel/04-API-references/12-Event-groups-or-flags/04-xEventGroupWaitBits
+    EventBits_t bits = xEventGroupWaitBits(buttonEvents, BUTTON_PRESSED_BIT,
+                                           pdTRUE, pdFALSE, 2);
+    if ((bits & BUTTON_PRESSED_BIT) == BUTTON_PRESSED_BIT) {
+
+      // we copy it since the value of the counter can change between the
+      // multiply and the send
+      uint8_t counterCopy = counter;
+
+      counterCopy *= 10;
+
+      uart_msg_t msg;
+      msg.source = SRC_COUNTER;
+      msg.value = counterCopy;
+
+      xQueueSend(UARTDataQueue, &msg, 5);
+    }
+  }
+}
+
+void UartTask(void *argument) {
+  // This initializes the nextWakeTick variable to be used in the infinite loop
+
+  TickType_t lastWake = xTaskGetTickCount();
+  /* Infinite loop */
+  for (;;) {
     uart_msg_t msg;
 
     char buf[32];
 
     // Drains the whole queue: takes messages until it's empty, then stops
-      // (timeout 0 = don't wait for more)
-    // REF: CMSIS-RTOS2 osMessageQueueGet: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Message.html
-    while (osMessageQueueGet(UARTDataHandle, &msg, NULL, 0) == osOK) {
+    // (timeout 0 = don't wait for more)
+    while (xQueueReceive(UARTDataQueue, &msg, 0) == pdPASS) {
       int len = 0;
 
       // Switch case on where the msg came from (shared or counter)
@@ -423,154 +444,27 @@ void StartDefaultTask(void *argument) {
 
     // osDelayUntil to ensure it runs every 5 ticks no matter how much time it
     // took to get the work done
-    // REF: CMSIS-RTOS2 osDelayUntil: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Wait.html
-    osDelayUntil(nextWakeTick);
+    vTaskDelayUntil(&lastWake, 5);
   }
-  /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_StartIncreaseVar */
-/**
- * @brief Function implementing the IncreaseVar thread.
- * @param argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartIncreaseVar */
-void StartIncreaseVar(void *argument) {
-  /* USER CODE BEGIN StartIncreaseVar */
-
-  // initializes timeToNextWakeUp to current ticks
-  // REF: CMSIS-RTOS2 osKernelGetTickCount: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__KernelCtrl.html
-  uint32_t timeToNextWakeup = osKernelGetTickCount();
-
-  /* Infinite loop */
-  for (;;) {
-    timeToNextWakeup += 10;
-
-    // mutex is used to make sure the shared variable is protected and
-    // osWaitForever is safe since the other task only uses it a few
-    // microseconds
-    // REF: CMSIS-RTOS2 osMutexAcquire: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__MutexMgmt.html
-    osMutexAcquire(sharedMutexHandle, osWaitForever);
-
-    shared++;
-
-    // Wrapping according to the spec sheet
-    if (shared > 200) {
-      shared = 100;
-    }
-
-    uart_msg_t msg;
-    msg.source = SRC_SHARED;
-    msg.value = shared;
-
-    // we release before sending it to the uart queue because if the queue hangs
-    // it doesnt stop runtime
-    // REF: CMSIS-RTOS2 osMutexRelease: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__MutexMgmt.html
-    osMutexRelease(sharedMutexHandle);
-
-    // timeout is 5 since thats how long it takes for the queue to clear and if
-    // the clear queue task is hung it should NOT hang this task too
-    // REF: CMSIS-RTOS2 osMessageQueuePut: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Message.html
-    osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
-    // REF: CMSIS-RTOS2 osDelayUntil: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Wait.html
-    osDelayUntil(timeToNextWakeup);
-  }
-  /* USER CODE END StartIncreaseVar */
-}
-
-/* USER CODE BEGIN Header_StartDecreaseVar */
-/**
- * @brief Function implementing the DecreaseVar thread.
- * @param argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartDecreaseVar */
-void StartDecreaseVar(void *argument) {
-  /* USER CODE BEGIN StartDecreaseVar */
-
-  // DecreaseVar: every 12 ticks
-  // REF: CMSIS-RTOS2 osKernelGetTickCount: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__KernelCtrl.html
-  uint32_t timeToNextWakeup = osKernelGetTickCount();
-
-  /* Infinite loop */
-  for (;;) {
-    timeToNextWakeup += 12;
-
-    // same mutex as IncreaseVar
-    // REF: CMSIS-RTOS2 osMutexAcquire: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__MutexMgmt.html
-    osMutexAcquire(sharedMutexHandle, osWaitForever);
-    shared--;
-
-    // here we use < and not <= since 100 is allowed as a value
-    if (shared < 100) {
-      shared = 200;
-    }
-
-    uart_msg_t msg;
-    msg.source = SRC_SHARED;
-    msg.value = shared;
-
-    // release before sending
-    // REF: CMSIS-RTOS2 osMutexRelease: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__MutexMgmt.html
-    osMutexRelease(sharedMutexHandle);
-
-    // REF: CMSIS-RTOS2 osMessageQueuePut: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Message.html
-    osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
-    // REF: CMSIS-RTOS2 osDelayUntil: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Wait.html
-    osDelayUntil(timeToNextWakeup);
-  }
-  /* USER CODE END StartDecreaseVar */
-}
-
-/* USER CODE BEGIN Header_StartCalcSwitch1 */
-/**
- * @brief Function implementing the CalcSwitch1 thread.
- * @param argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartCalcSwitch1 */
-void StartCalcSwitch1(void *argument) {
-  /* USER CODE BEGIN StartCalcSwitch1 */
-  /* Infinite loop */
-  for (;;) {
-
-    // waits for up to 2 ticks to read the button bit
-    // REF: https://freertos.org/Documentation/02-Kernel/04-API-references/12-Event-groups-or-flags/04-xEventGroupWaitBits
-    EventBits_t bits = xEventGroupWaitBits(buttonEvents, BUTTON_PRESSED_BIT,
-                                           pdTRUE, pdFALSE, 2);
-    if ((bits & BUTTON_PRESSED_BIT) == BUTTON_PRESSED_BIT) {
-
-      // we copy it since the value of the counter can change between the
-      // multiply and the send
-      uint8_t counterCopy = counter;
-
-      counterCopy *= 10;
-
-      uart_msg_t msg;
-      msg.source = SRC_COUNTER;
-      msg.value = counterCopy;
-
-      // REF: CMSIS-RTOS2 osMessageQueuePut: https://arm-software.github.io/CMSIS_5/RTOS2/html/group__CMSIS__RTOS__Message.html
-      osMessageQueuePut(UARTDataHandle, &msg, 0, 5);
-    }
-  }
-  /* USER CODE END StartCalcSwitch1 */
-}
+/* USER CODE END 4 */
 
 /**
- * @brief  Period elapsed callback in non blocking mode
- * @note   This function is called  when TIM4 interrupt took place, inside
- * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
- * a global variable "uwTick" used as application time base.
- * @param  htim : TIM handle
- * @retval None
- */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM4 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM4) {
+  if (htim->Instance == TIM4)
+  {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
@@ -579,10 +473,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 }
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
-void Error_Handler(void) {
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
@@ -592,13 +487,14 @@ void Error_Handler(void) {
 }
 #ifdef USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
-void assert_failed(uint8_t *file, uint32_t line) {
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
